@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UGOKUN 設定</title>
+<style>
+body{font-family:sans-serif;margin:0 auto;padding:16px;max-width:480px;color:#222}
+h1{font-size:1.3em}
+.row{display:flex;align-items:center;gap:8px;margin:10px 0}
+.row label{flex:1}
+.row input{width:7em;padding:6px;font-size:1em}
+.row .unit{width:2.5em}
+.ro{font-weight:bold;width:7em;text-align:right}
+.buttons{display:flex;gap:8px;margin-top:16px}
+button{flex:1;padding:10px;font-size:1em}
+#msg{margin-top:12px;min-height:1.5em}
+fieldset{border:1px solid #ccc;border-radius:6px;margin:12px 0;padding:8px 12px}
+.slider{display:flex;align-items:center;gap:8px}
+.slider input{flex:1}
+#volumeValue{width:3.5em;text-align:right}
+.status{font-size:.85em;color:#666;margin-top:6px}
+.err{color:#c00}
+#deviceName{width:12em}
+</style>
+</head>
+<body>
+<h1>UGOKUN パラメータ設定</h1>
+<fieldset>
+<legend>テスト再生（test.wav）</legend>
+<div class="slider">
+<label for="volume">再生音量</label>
+<input type="range" id="volume" min="0" max="100" value="50">
+<span id="volumeValue">50%</span>
+</div>
+<div class="buttons">
+<button id="play">再生</button>
+</div>
+<div id="audioStatus" class="status"></div>
+<p>ループ再生してサーボを動かしながら、下の値を「適用」で調整できます。Bluetoothがつながると停止します。</p>
+</fieldset>
+<div id="params"></div>
+<!-- 現在の音量レベルを隠しているため、チェックボックスも隠す。再生中の状態表示の更新には引き続き使う -->
+<label hidden><input type="checkbox" id="monitor"> 現在の音量レベルを1秒ごとに更新する（音声が途切れる場合はオフ）</label>
+<div class="buttons">
+<button id="apply">適用</button>
+<button id="save">適用して保存</button>
+</div>
+<p>「適用」は再起動すると元に戻ります。「適用して保存」で動作感度を設定ファイルに保存します。</p>
+<fieldset>
+<legend>デバイス名（Bluetooth / Wi-Fi）</legend>
+<div class="row">
+<label for="deviceName">デバイス名</label>
+<input type="text" id="deviceName" maxlength="32">
+</div>
+<div class="buttons">
+<button id="saveName">保存</button>
+</div>
+<div id="nameStatus" class="status"></div>
+<p>Bluetoothのデバイス名と、うごくん自身のWi-FiのSSIDに使います。半角英数字と記号で1〜32文字。保存すると、再起動後に反映されます。</p>
+</fieldset>
+<div id="msg"></div>
+<script>
+const box=document.getElementById('params');
+const msg=document.getElementById('msg');
+function show(text,isErr){msg.textContent=text;msg.className=isErr?'err':'';}
+async function api(path,body){
+  const res=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data=await res.json();
+  if(!res.ok)throw new Error(data.error||res.status);
+  return data;
+}
+//scaleがあるパラメータは、APIの整数値をscaleで割った小数で表示・入力する(動作感度 100→1.00)
+function digits(p){return p.scale?Math.round(Math.log10(p.scale)):0;}
+function toView(p,v){return p.scale?(v/p.scale).toFixed(digits(p)):v;}
+function build(list){
+  box.innerHTML='';
+  for(const p of list){
+    if(p.hidden)continue;
+    const row=document.createElement('div');row.className='row';
+    const label=document.createElement('label');label.textContent=p.label;label.htmlFor='p_'+p.key;
+    row.appendChild(label);
+    let v;
+    const s=p.scale||1;
+    if(p.writable){v=document.createElement('input');v.type='number';v.min=toView(p,p.min);v.max=toView(p,p.max);v.step=1/s;v.value=toView(p,p.value);}
+    else{v=document.createElement('span');v.className='ro';v.textContent=toView(p,p.value);}
+    v.id='p_'+p.key;v.dataset.scale=s;row.appendChild(v);
+    const u=document.createElement('span');u.className='unit';u.textContent=p.unit;row.appendChild(u);
+    box.appendChild(row);
+  }
+}
+function values(){
+  const body={};
+  for(const el of box.querySelectorAll('input'))body[el.id.slice(2)]=Math.round(Number(el.value)*Number(el.dataset.scale));
+  return body;
+}
+async function load(){
+  try{build((await api('/api/params')).params);showAudio(await api('/api/test_audio'));showName(await api('/api/device_name'));}
+  catch(e){show('読み込み失敗: '+e.message,true);}
+}
+async function apply(){await api('/api/params',values());}
+document.getElementById('apply').onclick=async()=>{
+  try{await apply();show('適用しました');}catch(e){show('適用失敗: '+e.message,true);}
+};
+document.getElementById('save').onclick=async()=>{
+  try{await apply();const r=await api('/api/save',{});show('保存しました (動作感度 '+(r.audio_gain/100).toFixed(2)+'倍)');}
+  catch(e){show('保存失敗: '+e.message,true);}
+};
+//デバイス名。保存した名前は再起動後に反映される
+const deviceName=document.getElementById('deviceName');
+function showName(d){
+  deviceName.value=d.saved;
+  document.getElementById('nameStatus').textContent='現在の名前: '+d.device_name+(d.saved!==d.device_name?' / 再起動後: '+d.saved:'');
+}
+document.getElementById('saveName').onclick=async()=>{
+  try{showName(await api('/api/device_name',{device_name:deviceName.value}));show('デバイス名を保存しました。再起動すると反映されます');}
+  catch(e){show('デバイス名の保存失敗: '+e.message,true);}
+};
+//テスト再生
+const playBtn=document.getElementById('play');
+const volume=document.getElementById('volume');
+const volumeValue=document.getElementById('volumeValue');
+let playing=false;
+function showAudio(a){
+  playing=a.playing;
+  playBtn.textContent=playing?'停止':'再生';
+  volume.max=a.max_volume;
+  if(document.activeElement!==volume){volume.value=a.volume;volumeValue.textContent=a.volume+'%';}
+  //再生できない場合の原因調査用
+  const st=document.getElementById('audioStatus');
+  st.textContent=(a.error?'停止理由: '+a.error+' / ':'')+'出力 '+a.frames+' フレーム / 空きメモリ '+a.heap_free+' (最大ブロック '+a.heap_max_block+')';
+  st.className=a.error?'status err':'status';
+}
+playBtn.onclick=async()=>{
+  try{
+    showAudio(await api('/api/test_audio',{playing:!playing,volume:Number(volume.value)}));
+    if(playing)monitor.checked=true;
+    show(playing?'再生中':'停止しました');
+  }catch(e){show((playing?'停止':'再生')+'失敗: '+e.message,true);}
+};
+//スライダーを動かしている間は、送信が重ならないよう間引いて送る
+let sending=false,pending=false;
+async function sendVolume(){
+  if(sending){pending=true;return;}
+  sending=true;
+  try{await api('/api/test_audio',{volume:Number(volume.value)});}catch(e){show('音量変更失敗: '+e.message,true);}
+  sending=false;
+  if(pending){pending=false;sendVolume();}
+}
+volume.oninput=()=>{volumeValue.textContent=volume.value+'%';sendVolume();};
+//音量の自動更新は、チェックを入れていて画面が表示されている間だけ行う
+//Wi-FiとBluetoothは電波を共用するため、常時通信するとオーディオが途切れやすくなる
+const monitor=document.getElementById('monitor');
+setInterval(async()=>{
+  if(!monitor.checked||document.hidden)return;
+  try{
+    const list=(await api('/api/params')).params;
+    for(const p of list){if(!p.writable){const el=document.getElementById('p_'+p.key);if(el)el.textContent=p.value;}}
+    if(playing)showAudio(await api('/api/test_audio'));
+  }catch(e){}
+},1000);
+load();
+</script>
+</body>
+</html>
